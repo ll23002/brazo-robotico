@@ -9,11 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.4.21",
-    "lucide-vue-next": "^0.359.0"
+    "lucide-vue-next": "^0.359.0",
+    "vue": "^3.4.21"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
     "@vitejs/plugin-vue": "^5.0.4",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^4.3.5",
     "vite": "^5.1.6"
   }
 }

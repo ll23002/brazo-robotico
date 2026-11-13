@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   --bg-main: #090d16;
   --bg-card: #111726;
@@ -14,8 +16,6 @@
 
 * {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
 }
 
 body {
