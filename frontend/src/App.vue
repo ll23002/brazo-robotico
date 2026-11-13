@@ -17,7 +17,18 @@
           </div>
         </div>
 
-        <div class="flex items-center gap-4">
+        <div class="flex items-center gap-3">
+          <!-- Botón de Sonido ON/OFF -->
+          <button
+            @click="toggleSound"
+            class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-slate-750 bg-slate-900 hover:bg-slate-800 transition"
+            :class="soundEnabled ? 'text-cyan-400 border-cyan-600' : 'text-slate-400 border-slate-800'"
+            title="Activar o silenciar reproducción de tono.mp3 en el navegador"
+          >
+            <span>{{ soundEnabled ? '🔊' : '🔇' }}</span>
+            <span class="font-semibold">{{ soundEnabled ? 'Tono: ON' : 'Tono: OFF' }}</span>
+          </button>
+
           <!-- Indicador de conexión serial -->
           <div class="flex items-center gap-2 text-xs bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800">
             <span class="w-2.5 h-2.5 rounded-full" :class="status.is_connected_serial ? 'bg-emerald-400' : 'bg-red-400'"></span>
@@ -93,7 +104,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import VideoViewer from './components/VideoViewer.vue'
 import ControlBar from './components/ControlBar.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
@@ -123,8 +134,44 @@ const config = ref({
 const portsList = ref([])
 const logs = ref([])
 const isGuideOpen = ref(false)
+const soundEnabled = ref(true)
 
 let pollTimer = null
+let toneAudio = null
+
+const initAudio = () => {
+  if (!toneAudio) {
+    toneAudio = new Audio('/tono.mp3')
+    toneAudio.preload = 'auto'
+  }
+}
+
+const playTone = () => {
+  if (!soundEnabled.value) return
+  initAudio()
+  try {
+    toneAudio.currentTime = 0
+    toneAudio.play().catch(e => {
+      console.warn('Audio en navegador en espera de interacción:', e)
+    })
+  } catch (err) {
+    console.warn('Error reproduciendo audio:', err)
+  }
+}
+
+const toggleSound = () => {
+  soundEnabled.value = !soundEnabled.value
+  if (soundEnabled.value) {
+    playTone()
+  }
+}
+
+// Reproducir tono automáticamente cuando el brazo pasa a estar ocupado moviéndose
+watch(() => status.value.status, (newStatus, oldStatus) => {
+  if (newStatus === 'BUSY' && oldStatus !== 'BUSY') {
+    playTone()
+  }
+})
 
 const fetchStatus = async () => {
   try {
@@ -173,6 +220,7 @@ const fetchLogs = async () => {
 }
 
 const handleControlAction = async (action) => {
+  initAudio()
   try {
     const res = await fetch(`/api/control/${action}`, { method: 'POST' })
     if (res.ok) {
@@ -203,6 +251,10 @@ const handleSaveConfig = async (newCfg) => {
 }
 
 const handleManualCmd = async (cmd) => {
+  initAudio()
+  if (cmd in { '2': 1, '4,1': 1, '4,2': 1 }) {
+    playTone()
+  }
   try {
     await fetch('/api/robot/command', {
       method: 'POST',
@@ -222,6 +274,7 @@ const onSelectPortFromGuide = (device) => {
 }
 
 onMounted(async () => {
+  initAudio()
   await fetchConfig()
   await fetchStatus()
   await fetchPorts()

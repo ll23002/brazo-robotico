@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 import cv2
 import time
+import os
 from typing import Optional, Dict, Any
 
 from .config import config, AppConfig
@@ -86,7 +87,6 @@ def update_config(update: ConfigUpdateRequest):
 def control_system(action: str):
     action = action.lower()
     if action == "start":
-        # Conectar serial si no está conectado
         if not state.is_connected_serial:
             robot_serial.connect(config.serial_port)
         state.set_status(SystemStatus.RUNNING)
@@ -121,6 +121,13 @@ def video_stream():
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
+@app.get("/api/audio/tone")
+def get_audio_tone():
+    tone_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tono.mp3"))
+    if os.path.exists(tone_path):
+        return FileResponse(tone_path, media_type="audio/mpeg")
+    raise HTTPException(status_code=404, detail="tono.mp3 no encontrado")
+
 @app.get("/api/system/ports")
 def get_ports():
     ports = robot_serial.list_ports()
@@ -140,10 +147,8 @@ def get_ports():
 
 @app.get("/api/system/cameras")
 def get_available_cameras():
-    """Detecta qué índices de cámara responden en OpenCV"""
     available = []
     for idx in range(4):
-        # Si es la cámara actualmente abierta por el manager, sabemos que está disponible
         if idx == config.camera_id and vision_manager.cap and vision_manager.cap.isOpened():
             available.append({"id": idx, "name": f"Cámara {idx} (En uso actual)", "active": True})
             continue
@@ -170,7 +175,6 @@ def get_arduino_boards():
 
 @app.post("/api/arduino/flash")
 def flash_arduino(req: FlashRequest):
-    # Si el puerto serial está en uso por la app, desconectarlo temporalmente para liberar el puerto
     was_connected = state.is_connected_serial
     if was_connected:
         robot_serial.disconnect()
@@ -180,7 +184,6 @@ def flash_arduino(req: FlashRequest):
 
     result = arduino_cli_mgr.compile_and_upload(target_fqbn, target_port)
 
-    # Si estaba conectado antes, intentar reconectar
     if was_connected:
         time.sleep(2)
         robot_serial.connect(target_port)
@@ -194,5 +197,10 @@ class ManualCommandRequest(BaseModel):
 def manual_command(req: ManualCommandRequest):
     if not state.is_connected_serial:
         raise HTTPException(status_code=400, detail="Puerto serial no está conectado")
+    
+    # Si es una orden de movimiento físico, reproducir tono
+    if req.command in ("2", "4,1", "4,2"):
+        robot_serial.play_tone()
+
     resp = robot_serial.send_raw_command(req.command)
     return {"command": req.command, "response": resp}

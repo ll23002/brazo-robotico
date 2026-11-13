@@ -2,6 +2,9 @@ import serial
 import serial.tools.list_ports
 import time
 import threading
+import os
+import shutil
+import subprocess
 from typing import List, Dict, Optional
 from .state import state, SystemStatus
 from .config import config
@@ -92,6 +95,25 @@ class RobotSerialController:
                 state.add_log("SERIAL", f"Error enviando comando '{cmd}': {e}")
                 return None
 
+    def play_tone(self):
+        """Reproduce tono.mp3 en segundo plano en la máquina anfitrión si está disponible"""
+        def _worker():
+            tone_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tono.mp3"))
+            if not os.path.exists(tone_path):
+                return
+            for player in [
+                ["mpg123", "-q", tone_path],
+                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tone_path],
+                ["pw-play", tone_path]
+            ]:
+                if shutil.which(player[0]):
+                    try:
+                        subprocess.run(player, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        break
+                    except Exception:
+                        continue
+        threading.Thread(target=_worker, daemon=True).start()
+
     def execute_routine(self, tipo_tornillo: int):
         """Ejecuta la rutina de recolección de tornillo en segundo plano"""
         threading.Thread(target=self._run_routine_thread, args=(tipo_tornillo,), daemon=True).start()
@@ -105,6 +127,9 @@ class RobotSerialController:
         prev_status = state.get_status()
         state.set_status(SystemStatus.BUSY)
         state.add_log("SISTEMA", f"Iniciando recolección de Tornillo Tipo {tipo_tornillo}")
+
+        # Reproducir tono acústico al iniciar movimiento
+        self.play_tone()
 
         with self._lock:
             if not self.serial_conn or not self.serial_conn.is_open:
