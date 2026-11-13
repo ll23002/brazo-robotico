@@ -1,0 +1,10 @@
+{
+  "camera_id": 0,
+  "serial_port": "/dev/ttyUSB0",
+  "baud_rate": 115200,
+  "recognition_time": 0.35,
+  "confidence": 0.6,
+  "model_path": "/home/alexander/brazo-robotico-web/models/best.pt",
+  "frame_width": 640,
+  "frame_height": 480
+}
