@@ -3,7 +3,7 @@ import json
 from pydantic import BaseModel
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "config.json")
-DEFAULT_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models", "best.pt"))
+DEFAULT_MODEL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models", "best-personalizado.pt"))
 
 class AppConfig(BaseModel):
     camera_id: int = 2
