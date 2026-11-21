@@ -4,7 +4,7 @@
   "baud_rate": 115200,
   "recognition_time": 0.5,
   "confidence": 0.7,
-  "model_path": "/home/alexander/brazo-robotico-web/models/best.pt",
+  "model_path": "/home/alexander/brazo-robotico-web/models/best-personalizado.pt",
   "frame_width": 640,
   "frame_height": 480
 }
