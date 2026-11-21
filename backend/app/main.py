@@ -105,18 +105,15 @@ def control_system(action: str):
         raise HTTPException(status_code=400, detail=f"Acción '{action}' no válida. Usa start, pause o stop.")
 
 def mjpeg_frame_generator():
+    last_frame_id = -1
     while True:
-        if robot_serial.is_busy:
-            time.sleep(0.033)
-            continue
-
-        frame = vision_manager.latest_jpeg
-        if frame is not None:
+        frame, frame_id = vision_manager.wait_for_frame(last_frame_id, timeout=1.0)
+        if frame is not None and frame_id != last_frame_id:
+            last_frame_id = frame_id
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
             )
-        time.sleep(0.033)  # ~30 FPS
 
 @app.get("/api/video/stream")
 def video_stream():
@@ -201,10 +198,6 @@ class ManualCommandRequest(BaseModel):
 def manual_command(req: ManualCommandRequest):
     if not state.is_connected_serial:
         raise HTTPException(status_code=400, detail="Puerto serial no está conectado")
-    
-    # Si es una orden de movimiento físico, reproducir tono
-    if req.command in ("2", "4,1", "4,2"):
-        robot_serial.play_tone()
 
     resp = robot_serial.send_raw_command(req.command)
     return {"command": req.command, "response": resp}

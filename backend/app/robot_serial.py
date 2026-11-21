@@ -128,48 +128,45 @@ class RobotSerialController:
         state.set_status(SystemStatus.BUSY)
         state.add_log("SISTEMA", f"Iniciando recolección de Tornillo Tipo {tipo_tornillo}")
 
-        # Reproducir tono acústico al iniciar movimiento
-        self.play_tone()
+        try:
+            with self._lock:
+                if not self.serial_conn or not self.serial_conn.is_open:
+                    state.add_log("SERIAL", "No se ejecutó la rutina: sin conexión serial.")
+                    return
 
-        with self._lock:
-            if not self.serial_conn or not self.serial_conn.is_open:
-                state.add_log("SERIAL", "No se ejecutó la rutina: sin conexión serial.")
-                self.is_busy = False
-                state.set_status(prev_status)
-                return
+                secuencia = ["1", "2", f"4,{tipo_tornillo}", "1"]
+                for orden in secuencia:
+                    try:
+                        comando = f"{orden}\n"
+                        self.serial_conn.write(comando.encode())
+                        self.serial_conn.flush()
+                        state.add_log("SERIAL", f"Orden enviada al brazo: {orden}")
 
-            secuencia = ["1", "2", f"4,{tipo_tornillo}", "1"]
-            for orden in secuencia:
-                try:
-                    comando = f"{orden}\n"
-                    self.serial_conn.write(comando.encode())
-                    self.serial_conn.flush()
-                    state.add_log("SERIAL", f"Orden enviada al brazo: {orden}")
+                        expected_ack = f"Orden recibida: {orden} ->"
+                        deadline = time.monotonic() + 10
+                        acknowledged = False
+                        while time.monotonic() < deadline:
+                            respuesta = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
+                            if respuesta:
+                                state.add_log("ARDUINO", respuesta)
+                                if expected_ack in respuesta:
+                                    acknowledged = True
+                                    break
 
-                    expected_ack = f"Orden recibida: {orden} ->"
-                    deadline = time.monotonic() + 10
-                    acknowledged = False
-                    while time.monotonic() < deadline:
-                        respuesta = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
-                        if respuesta:
-                            state.add_log("ARDUINO", respuesta)
-                            if expected_ack in respuesta:
-                                acknowledged = True
-                                break
-
-                    if not acknowledged:
-                        state.add_log(
-                            "SERIAL",
-                            f"Sin confirmación de la orden '{orden}'. Se mantiene el video pausado por seguridad."
-                        )
+                        if not acknowledged:
+                            state.add_log(
+                                "SERIAL",
+                                f"Sin confirmación de la orden '{orden}'. Abortando rutina."
+                            )
+                            break
+                    except Exception as e:
+                        state.add_log("SERIAL", f"Error en secuencia orden '{orden}': {e}")
                         break
-                except Exception as e:
-                    state.add_log("SERIAL", f"Error en secuencia orden '{orden}': {e}")
-                    break
-            else:
-                state.add_log("SISTEMA", "Rutina completada. Retomando visión.")
-                self.is_busy = False
-                state.set_status(prev_status if prev_status != SystemStatus.BUSY else SystemStatus.RUNNING)
+                else:
+                    state.add_log("SISTEMA", "Rutina completada. Retomando visión.")
+        finally:
+            self.is_busy = False
+            state.set_status(prev_status if prev_status != SystemStatus.BUSY else SystemStatus.RUNNING)
 
     @staticmethod
     def list_ports() -> List[Dict[str, str]]:

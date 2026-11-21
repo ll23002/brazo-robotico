@@ -280,10 +280,14 @@ onMounted(async () => {
   await fetchPorts()
   await fetchLogs()
 
-  // Polling de telemetría y logs cada 600ms
+  // Polling de telemetría cada 600ms y logs cada 1800ms
+  let pollTick = 0
   pollTimer = setInterval(async () => {
+    pollTick++
     await fetchStatus()
-    await fetchLogs()
+    if (pollTick % 3 === 0) {
+      await fetchLogs()
+    }
   }, 600)
 })
 

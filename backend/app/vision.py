@@ -15,11 +15,20 @@ class VisionManager:
         self.cap: Optional[cv2.VideoCapture] = None
         self._lock = threading.Lock()
         self._camera_lock = threading.RLock()
+        self._frame_lock = threading.Lock()
+        self._jpeg_cond = threading.Condition()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._reader_thread: Optional[threading.Thread] = None
+
+        # Último frame crudo leído por el hilo dedicado de cámara
+        self._raw_frame: Optional[np.ndarray] = None
+        self._raw_frame_id: int = 0
+        self._read_failures: int = 0
         
         # Último frame codificado en JPEG listo para streaming MJPEG
         self.latest_jpeg: Optional[bytes] = None
+        self.latest_frame_id: int = 0
         
         # Variables de control temporal de detección
         self.tiempo_primera_deteccion = 0.0
@@ -46,12 +55,18 @@ class VisionManager:
             if self._running:
                 return
             self._running = True
+            self._reader_thread = threading.Thread(target=self._camera_reader_loop, daemon=True)
+            self._reader_thread.start()
             self._thread = threading.Thread(target=self._capture_loop, daemon=True)
             self._thread.start()
 
     def stop_vision(self):
         with self._lock:
             self._running = False
+        with self._jpeg_cond:
+            self._jpeg_cond.notify_all()
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._release_camera()
@@ -62,12 +77,17 @@ class VisionManager:
             try:
                 state.add_log("CÁMARA", f"Iniciando captura de video en índice {cam_id}...")
                 cap = cv2.VideoCapture(cam_id)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.frame_width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.frame_height)
                 if cap.isOpened():
-                    ret, _ = cap.read()
+                    ret, first_frame = cap.read()
                     if ret:
                         self.cap = cap
+                        with self._frame_lock:
+                            self._raw_frame = first_frame
+                            self._raw_frame_id += 1
+                            self._read_failures = 0
                         state.is_camera_active = True
                         state.add_log("CÁMARA", f"Cámara {cam_id} conectada y activa.")
                         return True
@@ -108,17 +128,57 @@ class VisionManager:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1, cv2.LINE_AA)
         return img
 
-    def _capture_loop(self):
-        self._init_camera(config.camera_id)
-        last_frame_time = time.time()
-        
+    def _camera_reader_loop(self):
+        """Hilo dedicado para vaciar el buffer de la cámara y conservar siempre el frame más reciente."""
         while self._running:
-            current_status = state.get_status()
-            
             with self._camera_lock:
                 cap = self.cap
                 camera_open = cap is not None and cap.isOpened()
-                ret, frame = cap.read() if camera_open else (False, None)
+                if camera_open:
+                    ret, frame = cap.read()
+                else:
+                    ret, frame = False, None
+
+            if not camera_open:
+                time.sleep(0.1)
+                continue
+
+            if ret and frame is not None:
+                with self._frame_lock:
+                    self._raw_frame = frame
+                    self._raw_frame_id += 1
+                    self._read_failures = 0
+            else:
+                with self._frame_lock:
+                    self._read_failures += 1
+                time.sleep(0.01)
+
+    def _get_latest_raw_frame(self):
+        with self._frame_lock:
+            if self._raw_frame is None:
+                return False, None, self._read_failures
+            return True, self._raw_frame.copy(), self._read_failures
+
+    def wait_for_frame(self, last_frame_id: int, timeout: float = 1.0):
+        """Espera hasta que haya un nuevo frame JPEG disponible o venza el timeout."""
+        with self._jpeg_cond:
+            if self.latest_frame_id == last_frame_id and self._running:
+                self._jpeg_cond.wait(timeout=timeout)
+            return self.latest_jpeg, self.latest_frame_id
+
+    def _capture_loop(self):
+        self._init_camera(config.camera_id)
+        last_frame_time = time.time()
+        target_interval = 1.0 / 30.0
+        
+        while self._running:
+            loop_start = time.monotonic()
+            current_status = state.get_status()
+
+            with self._camera_lock:
+                camera_open = self.cap is not None and self.cap.isOpened()
+
+            ret, frame, failures = self._get_latest_raw_frame()
 
             if not camera_open:
                 frame = self._generate_placeholder(
@@ -126,10 +186,13 @@ class VisionManager:
                     f"Índice actual: {config.camera_id}. Revisa la configuración o prueba con 0, 1 o 2."
                 )
                 time.sleep(0.3)
-            elif not ret:
+            elif failures >= 15:
                 frame = self._generate_placeholder("Error de lectura de video", "Reconectando cámara...")
                 time.sleep(0.2)
                 self._init_camera(config.camera_id)
+            elif not ret or frame is None:
+                time.sleep(0.01)
+                continue
             else:
                 # Cálculo de FPS
                 now = time.time()
@@ -148,21 +211,29 @@ class VisionManager:
                 elif current_status == SystemStatus.STOPPED:
                     self._draw_overlay_banner(frame, "SISTEMA EN ESPERA (APAGADO)", (80, 80, 200))
 
-            # Codificar a JPEG
+            # Codificar a JPEG y notificar al generador MJPEG
             try:
-                ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                if ret:
-                    self.latest_jpeg = buffer.tobytes()
-            except Exception as e:
+                ok, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                if ok:
+                    with self._jpeg_cond:
+                        self.latest_jpeg = buffer.tobytes()
+                        self.latest_frame_id += 1
+                        self._jpeg_cond.notify_all()
+            except Exception:
                 pass
 
-            time.sleep(0.015)  # Limitar a ~30-45 FPS para optimizar CPU
+            elapsed = time.monotonic() - loop_start
+            remaining = target_interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
 
     def _draw_overlay_banner(self, frame: np.ndarray, text: str, color: tuple):
         h, w = frame.shape[:2]
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (20, 20), (w - 20, 80), (20, 20, 20), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        y1, y2 = 20, min(80, h)
+        x1, x2 = 20, max(21, w - 20)
+        roi = frame[y1:y2, x1:x2]
+        dark = np.full_like(roi, 20)
+        cv2.addWeighted(dark, 0.6, roi, 0.4, 0, roi)
         cv2.putText(frame, text, (40, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2, cv2.LINE_AA)
 
     def _process_yolo_detection(self, frame: np.ndarray) -> np.ndarray:
