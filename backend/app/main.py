@@ -106,6 +106,10 @@ def control_system(action: str):
 
 def mjpeg_frame_generator():
     while True:
+        if robot_serial.is_busy:
+            time.sleep(0.033)
+            continue
+
         frame = vision_manager.latest_jpeg
         if frame is not None:
             yield (
@@ -149,7 +153,7 @@ def get_ports():
 def get_available_cameras():
     available = []
     for idx in range(4):
-        if idx == config.camera_id and vision_manager.cap and vision_manager.cap.isOpened():
+        if idx == config.camera_id and state.is_camera_active:
             available.append({"id": idx, "name": f"Cámara {idx} (En uso actual)", "active": True})
             continue
 

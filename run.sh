@@ -19,6 +19,7 @@ fi
 
 # Función de limpieza al detener
 cleanup() {
+    local exit_code=$?
     echo ""
     echo "🛑 Deteniendo servidores..."
     if [ -n "$BACKEND_PID" ]; then
@@ -28,7 +29,7 @@ cleanup() {
         kill "$FRONTEND_PID" 2>/dev/null || true
     fi
     echo "✅ Servidores detenidos."
-    exit 0
+    exit "$exit_code"
 }
 
 trap cleanup SIGINT SIGTERM EXIT
@@ -38,7 +39,26 @@ cd "$REPO_DIR/backend"
 "$PYTHON_BIN" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!
 
-sleep 2
+echo "Esperando a que el backend esté listo..."
+BACKEND_READY=0
+for attempt in {1..60}; do
+    if curl --fail --silent --max-time 1 http://127.0.0.1:8000/api/status >/dev/null; then
+        BACKEND_READY=1
+        break
+    fi
+
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "❌ Error: el proceso del backend terminó antes de estar listo."
+        exit 1
+    fi
+
+    sleep 1
+done
+
+if [ "$BACKEND_READY" -ne 1 ]; then
+    echo "❌ Error: el backend no respondió en 60 segundos."
+    exit 1
+fi
 
 echo "2. Iniciando Frontend Vue 3 en http://localhost:5173..."
 cd "$REPO_DIR/frontend"

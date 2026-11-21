@@ -146,22 +146,30 @@ class RobotSerialController:
                     self.serial_conn.flush()
                     state.add_log("SERIAL", f"Orden enviada al brazo: {orden}")
 
-                    # Tiempos de espera acordes al firmware
-                    if orden in ("2", "5") or orden.startswith("4"):
-                        time.sleep(0.7)
-                    else:
-                        time.sleep(0.5)
-
-                    while self.serial_conn.in_waiting > 0:
+                    expected_ack = f"Orden recibida: {orden} ->"
+                    deadline = time.monotonic() + 10
+                    acknowledged = False
+                    while time.monotonic() < deadline:
                         respuesta = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
                         if respuesta:
                             state.add_log("ARDUINO", respuesta)
+                            if expected_ack in respuesta:
+                                acknowledged = True
+                                break
+
+                    if not acknowledged:
+                        state.add_log(
+                            "SERIAL",
+                            f"Sin confirmación de la orden '{orden}'. Se mantiene el video pausado por seguridad."
+                        )
+                        break
                 except Exception as e:
                     state.add_log("SERIAL", f"Error en secuencia orden '{orden}': {e}")
-
-        state.add_log("SISTEMA", "Rutina completada. Retomando visión.")
-        self.is_busy = False
-        state.set_status(prev_status if prev_status != SystemStatus.BUSY else SystemStatus.RUNNING)
+                    break
+            else:
+                state.add_log("SISTEMA", "Rutina completada. Retomando visión.")
+                self.is_busy = False
+                state.set_status(prev_status if prev_status != SystemStatus.BUSY else SystemStatus.RUNNING)
 
     @staticmethod
     def list_ports() -> List[Dict[str, str]]:

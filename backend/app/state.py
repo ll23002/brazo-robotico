@@ -38,7 +38,7 @@ class AppState:
     def set_status(self, new_status: SystemStatus):
         with self._lock:
             self.status = new_status
-            self.add_log("SISTEMA", f"Estado cambiado a {new_status.value}")
+        self.add_log("SISTEMA", f"Estado cambiado a {new_status.value}")
 
     def get_status(self) -> SystemStatus:
         with self._lock:

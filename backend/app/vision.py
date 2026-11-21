@@ -14,6 +14,7 @@ class VisionManager:
         self.model: Optional[YOLO] = None
         self.cap: Optional[cv2.VideoCapture] = None
         self._lock = threading.Lock()
+        self._camera_lock = threading.RLock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
         
@@ -56,35 +57,40 @@ class VisionManager:
         self._release_camera()
 
     def _init_camera(self, cam_id: int) -> bool:
-        self._release_camera()
-        try:
-            state.add_log("CÁMARA", f"Iniciando captura de video en índice {cam_id}...")
-            cap = cv2.VideoCapture(cam_id)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.frame_width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.frame_height)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    self.cap = cap
-                    state.is_camera_active = True
-                    state.add_log("CÁMARA", f"Cámara {cam_id} conectada y activa.")
-                    return True
-            cap.release()
-        except Exception as e:
-            state.add_log("CÁMARA", f"Error iniciando cámara {cam_id}: {e}")
-        
-        self.cap = None
-        state.is_camera_active = False
-        return False
+        with self._camera_lock:
+            self._release_camera()
+            try:
+                state.add_log("CÁMARA", f"Iniciando captura de video en índice {cam_id}...")
+                cap = cv2.VideoCapture(cam_id)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.frame_width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.frame_height)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        self.cap = cap
+                        state.is_camera_active = True
+                        state.add_log("CÁMARA", f"Cámara {cam_id} conectada y activa.")
+                        return True
+                    state.add_log("CÁMARA", f"No se pudo leer video de la cámara {cam_id}.")
+                else:
+                    state.add_log("CÁMARA", f"No se pudo abrir la cámara {cam_id} (/dev/video{cam_id}).")
+                cap.release()
+            except Exception as e:
+                state.add_log("CÁMARA", f"Error iniciando cámara {cam_id}: {e}")
+
+            self.cap = None
+            state.is_camera_active = False
+            return False
 
     def _release_camera(self):
-        if self.cap:
-            try:
-                self.cap.release()
-            except Exception:
-                pass
-            self.cap = None
-        state.is_camera_active = False
+        with self._camera_lock:
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
+                self.cap = None
+            state.is_camera_active = False
 
     def change_camera(self, new_id: int):
         with self._lock:
@@ -109,35 +115,38 @@ class VisionManager:
         while self._running:
             current_status = state.get_status()
             
-            if not self.cap or not self.cap.isOpened():
+            with self._camera_lock:
+                cap = self.cap
+                camera_open = cap is not None and cap.isOpened()
+                ret, frame = cap.read() if camera_open else (False, None)
+
+            if not camera_open:
                 frame = self._generate_placeholder(
                     "Cámara no disponible", 
                     f"Índice actual: {config.camera_id}. Revisa la configuración o prueba con 0, 1 o 2."
                 )
                 time.sleep(0.3)
+            elif not ret:
+                frame = self._generate_placeholder("Error de lectura de video", "Reconectando cámara...")
+                time.sleep(0.2)
+                self._init_camera(config.camera_id)
             else:
-                ret, frame = self.cap.read()
-                if not ret:
-                    frame = self._generate_placeholder("Error de lectura de video", "Reconectando cámara...")
-                    time.sleep(0.2)
-                    self._init_camera(config.camera_id)
-                else:
-                    # Cálculo de FPS
-                    now = time.time()
-                    dt = now - last_frame_time
-                    last_frame_time = now
-                    if dt > 0:
-                        state.fps = 0.9 * state.fps + 0.1 * (1.0 / dt)
+                # Cálculo de FPS
+                now = time.time()
+                dt = now - last_frame_time
+                last_frame_time = now
+                if dt > 0:
+                    state.fps = 0.9 * state.fps + 0.1 * (1.0 / dt)
 
-                    # Procesamiento según estado
-                    if current_status == SystemStatus.RUNNING and not robot_serial.is_busy:
-                        frame = self._process_yolo_detection(frame)
-                    elif robot_serial.is_busy:
-                        self._draw_overlay_banner(frame, "BRAZO EN MOVIMIENTO...", (0, 140, 255))
-                    elif current_status == SystemStatus.PAUSED:
-                        self._draw_overlay_banner(frame, "DETECCIÓN PAUSADA", (0, 215, 255))
-                    elif current_status == SystemStatus.STOPPED:
-                        self._draw_overlay_banner(frame, "SISTEMA EN ESPERA (APAGADO)", (80, 80, 200))
+                # Procesamiento según estado
+                if current_status == SystemStatus.RUNNING and not robot_serial.is_busy:
+                    frame = self._process_yolo_detection(frame)
+                elif robot_serial.is_busy:
+                    self._draw_overlay_banner(frame, "BRAZO EN MOVIMIENTO...", (0, 140, 255))
+                elif current_status == SystemStatus.PAUSED:
+                    self._draw_overlay_banner(frame, "DETECCIÓN PAUSADA", (0, 215, 255))
+                elif current_status == SystemStatus.STOPPED:
+                    self._draw_overlay_banner(frame, "SISTEMA EN ESPERA (APAGADO)", (80, 80, 200))
 
             # Codificar a JPEG
             try:
